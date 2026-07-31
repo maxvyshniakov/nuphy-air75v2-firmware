@@ -1,0 +1,286 @@
+diff --git a/keyboards/nuphy/air75v2/ansi/ansi.h b/keyboards/nuphy/air75v2/ansi/ansi.h
+--- a/keyboards/nuphy/air75v2/ansi/ansi.h
++++ b/keyboards/nuphy/air75v2/ansi/ansi.h
+@@ -160,6 +160,8 @@ enum via_indicator_value {
+     // Volatile F6 Focus and Mute-key indicators. Payload: RGB + active flag.
+     id_host_focus_indicator         = 46,
+     id_host_mute_indicator          = 47,
++    // Volatile stereo meter. Payload: left + right + active + marker.
++    id_host_audio_meter             = 48,
++    // Volatile stereo meter overlay color. Payload: RGB + marker.
++    id_host_audio_meter_color       = 49,
++    // Volatile meter display mode. Payload: mode + padding + marker.
++    id_host_audio_meter_mode        = 50,
+ };
+ 
+ // function declaration
+@@ -173,6 +175,7 @@ void host_side_calibrate_rgb(uint8_t *r, uint8_t *g, uint8_t *b);
+ bool host_main_rgb_calibration_needs_flush(void);
+ bool host_calibration_test_color(RGB *color, uint8_t level);
++bool host_audio_meter_levels(uint8_t *left, uint8_t *right);
++void host_audio_meter_color(RGB *color);
++uint8_t host_audio_meter_mode(void);
+ 
+ extern kb_config_t g_config;
+ 
+diff --git a/keyboards/nuphy/air75v2/ansi/ansi.c b/keyboards/nuphy/air75v2/ansi/ansi.c
+--- a/keyboards/nuphy/air75v2/ansi/ansi.c
++++ b/keyboards/nuphy/air75v2/ansi/ansi.c
+@@ -74,6 +74,7 @@ static bool host_indicator_active;
+ #define HOST_MAIN_BASE_RED 100
+ #define HOST_MAIN_BASE_GREEN 50
+ #define HOST_MAIN_BASE_BLUE 50
++#define HOST_AUDIO_METER_MARKER 0xA8
++#define HOST_AUDIO_METER_COLOR_MARKER 0xA9
++#define HOST_AUDIO_METER_MODE_MARKER 0xAA
+ 
+ enum host_rgb_calibration_test_mode {
+     host_rgb_test_off = 0,
+@@ -101,6 +102,10 @@ static RGB host_side_rgb_gain = {
+ static uint8_t host_rgb_test_mode;
+ static uint8_t host_rgb_test_level;
+ static bool    host_main_rgb_calibration_dirty;
++static uint8_t host_audio_meter_left;
++static uint8_t host_audio_meter_right;
++static bool    host_audio_meter_active;
++static uint32_t host_audio_meter_updated_at;
++static RGB      host_audio_meter_rgb = {.r = 0xff, .g = 0xff, .b = 0xff};
++static uint8_t  host_audio_meter_display_mode;
+ 
+ static bool     host_brightness_protocol_active;
+ static bool     host_brightness_transitioning;
+@@ -171,6 +176,13 @@ bool host_calibration_test_color(RGB *color, uint8_t level) {
+     }
+ }
+ 
++bool host_audio_meter_levels(uint8_t *left, uint8_t *right) {
++    bool fresh = timer_elapsed32(host_audio_meter_updated_at) < 300;
++    *left = host_audio_meter_left;
++    *right = host_audio_meter_right;
++    return host_audio_meter_active && fresh;
++}
++
++void host_audio_meter_color(RGB *color) {
++    *color = host_audio_meter_rgb;
++}
++
++uint8_t host_audio_meter_mode(void) {
++    return host_audio_meter_display_mode;
++}
++
+ static void host_brightness_set_target(uint8_t target, uint8_t duration_ms) {
+     uint8_t current = rgb_matrix_get_val();
+ 
+@@ -1024,6 +1036,14 @@ void via_config_set_value(uint8_t *data)
+                 host_rgb_test_level = value_data[1];
+             }
+             break;
++        case id_host_audio_meter:
++            if (value_data[3] == HOST_AUDIO_METER_MARKER) {
++                host_audio_meter_left       = value_data[0];
++                host_audio_meter_right      = value_data[1];
++                host_audio_meter_active     = value_data[2] != 0;
++                host_audio_meter_updated_at = timer_read32();
++            }
++            break;
++        case id_host_audio_meter_color:
++            if (value_data[3] == HOST_AUDIO_METER_COLOR_MARKER) {
++                host_audio_meter_rgb = (RGB){
++                    .r = value_data[0],
++                    .g = value_data[1],
++                    .b = value_data[2],
++                };
++            }
++            break;
++        case id_host_audio_meter_mode:
++            if (value_data[3] == HOST_AUDIO_METER_MODE_MARKER
++                && value_data[0] <= 2) {
++                host_audio_meter_display_mode = value_data[0];
++            }
++            break;
+     }
+ }
+ 
+@@ -1157,6 +1177,12 @@ void via_config_get_value(uint8_t *data) {
+             value_data[1] = host_rgb_test_level;
+             value_data[2] = HOST_RGB_CALIBRATION_MARKER;
+             break;
++        case id_host_audio_meter:
++            value_data[0] = host_audio_meter_left;
++            value_data[1] = host_audio_meter_right;
++            value_data[2] = host_audio_meter_active;
++            value_data[3] = HOST_AUDIO_METER_MARKER;
++            break;
++        case id_host_audio_meter_color:
++            value_data[0] = host_audio_meter_rgb.r;
++            value_data[1] = host_audio_meter_rgb.g;
++            value_data[2] = host_audio_meter_rgb.b;
++            value_data[3] = HOST_AUDIO_METER_COLOR_MARKER;
++            break;
++        case id_host_audio_meter_mode:
++            value_data[0] = host_audio_meter_display_mode;
++            value_data[1] = 0;
++            value_data[2] = 0;
++            value_data[3] = HOST_AUDIO_METER_MODE_MARKER;
++            break;
+     }
+ }
+ 
+diff --git a/keyboards/nuphy/air75v2/ansi/side.c b/keyboards/nuphy/air75v2/ansi/side.c
+--- a/keyboards/nuphy/air75v2/ansi/side.c
++++ b/keyboards/nuphy/air75v2/ansi/side.c
+@@ -49,6 +49,7 @@ extern uint16_t rf_link_show_time;
+ extern uint8_t  right_side_play_cnt;
+ extern uint32_t right_side_play_timer;
++extern const uint8_t right_side_led_index_tab[RIGHT_SIDE_LINE];
+ 
+ RGB  side_leds[SIDE_LED_NUM] = {0};
+ void side_ws2812_setleds(RGB *ledarray, uint16_t leds);
+@@ -525,6 +526,76 @@ static void side_static_mode_show(void) {
+     set_side_rgb(r_temp, g_temp, b_temp);
+ }
+ 
++static RGB host_audio_meter_overlay_color(uint8_t brightness) {
++    RGB color;
++    host_audio_meter_color(&color);
++    uint16_t scale = side_light_table[brightness] + 1;
++    color.r = ((uint16_t)color.r * scale) >> 8;
++    color.g = ((uint16_t)color.g * scale) >> 8;
++    color.b = ((uint16_t)color.b * scale) >> 8;
++    host_side_calibrate_rgb(&color.r, &color.g, &color.b);
++    color.r >>= 2;
++    color.g >>= 2;
++    color.b >>= 2;
++    return color;
++}
++
++static uint8_t host_audio_meter_blend(
++    uint8_t background,
++    uint8_t white,
++    uint8_t intensity
++) {
++    return ((uint16_t)background * (255 - intensity)
++        + (uint16_t)white * intensity + 127) / 255;
++}
++
++static void host_audio_meter_bar(
++    const uint8_t *indices,
++    uint8_t level,
++    RGB color,
++    bool reverse
++) {
++    uint16_t scaled = (uint16_t)level * SIDE_LINE;
++    uint8_t full = scaled / 255;
++    uint8_t partial = scaled % 255;
++    for (uint8_t segment = 0; segment < SIDE_LINE; segment++) {
++        uint8_t intensity = segment < full
++            ? 255
++            : (segment == full ? partial : 0);
++        if (intensity > 0) {
++            uint8_t index = indices[
++                reverse ? SIDE_LINE - 1 - segment : segment
++            ];
++            RGB background = side_leds[index];
++            side_rgb_set_color(
++                index,
++                host_audio_meter_blend(background.r, color.r, intensity),
++                host_audio_meter_blend(background.g, color.g, intensity),
++                host_audio_meter_blend(background.b, color.b, intensity)
++            );
++        }
++    }
++}
++
++static void host_audio_meter_peak(
++    const uint8_t *indices,
++    uint8_t level,
++    RGB color,
++    bool reverse
++) {
++    if (level == 0) return;
++    uint8_t segment = MIN(
++        SIDE_LINE - 1,
++        ((uint16_t)level * SIDE_LINE) / 256
++    );
++    uint8_t index = indices[
++        reverse ? SIDE_LINE - 1 - segment : segment
++    ];
++    side_rgb_set_color(index, color.r, color.g, color.b);
++}
++
++static void host_audio_meter_show(void) {
++    static uint8_t displayed_left;
++    static uint8_t displayed_right;
++    static uint8_t peak_left;
++    static uint8_t peak_right;
++    static uint32_t animation_timer;
++    static uint32_t peak_left_held_at;
++    static uint32_t peak_right_held_at;
++    uint8_t target_left;
++    uint8_t target_right;
++    bool active = host_audio_meter_levels(&target_left, &target_right);
++    if (!active) {
++        displayed_left = 0;
++        displayed_right = 0;
++        peak_left = 0;
++        peak_right = 0;
++        return;
++    }
++
++    if (timer_elapsed32(animation_timer) >= 40) {
++        animation_timer = timer_read32();
++        displayed_left = target_left >= displayed_left
++            ? target_left
++            : MAX(target_left, displayed_left > 18 ? displayed_left - 18 : 0);
++        displayed_right = target_right >= displayed_right
++            ? target_right
++            : MAX(target_right, displayed_right > 18 ? displayed_right - 18 : 0);
++        if (target_left >= peak_left) {
++            peak_left = target_left;
++            peak_left_held_at = animation_timer;
++        } else if (timer_elapsed32(peak_left_held_at) >= 160) {
++            peak_left = MAX(target_left, peak_left > 8 ? peak_left - 8 : 0);
++        }
++        if (target_right >= peak_right) {
++            peak_right = target_right;
++            peak_right_held_at = animation_timer;
++        } else if (timer_elapsed32(peak_right_held_at) >= 160) {
++            peak_right = MAX(target_right, peak_right > 8 ? peak_right - 8 : 0);
++        }
++    }
++
++    RGB left_color = host_audio_meter_overlay_color(g_config.side_brightness);
++    RGB right_color = host_audio_meter_overlay_color(g_config.right_side_brightness);
++    uint8_t mode = host_audio_meter_mode();
++    if (mode != 1) {
++        host_audio_meter_bar(side_led_index_tab, displayed_left, left_color, false);
++        host_audio_meter_bar(right_side_led_index_tab, displayed_right, right_color, true);
++    }
++    if (mode != 0) {
++        host_audio_meter_peak(side_led_index_tab, peak_left, left_color, false);
++        host_audio_meter_peak(right_side_led_index_tab, peak_right, right_color, true);
++    }
++}
++
+ /**
+  * @brief  side_off_mode_show.
+  */
+@@ -960,6 +1031,9 @@ void side_led_show(void) {
+             break;
+     }
+ 
++    right_side_led_loop();
++    host_audio_meter_show();
++
+ #if (WORK_MODE == THREE_MODE)
+     bat_led_show();
+     rf_led_show();
+@@ -968,8 +1042,6 @@ void side_led_show(void) {
+     sys_sw_led_show();
+     sleep_sw_led_show();
+ 
+-    right_side_led_loop();
+-
+     RGB left_calibration_test_color;
+     if (host_calibration_test_color(
+             &left_calibration_test_color,

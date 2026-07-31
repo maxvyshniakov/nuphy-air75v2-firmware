@@ -15,7 +15,12 @@ index 6790378d56..b6dea7c9a8 100644
  extern void exit_light_sleep(void);
  
 +static RGB  host_indicator_color;
++static RGB  host_media_indicator_color = {.r = 0xaa, .g = 0xff, .b = 0x00};
++static RGB  host_focus_indicator_color = {.r = 0x00, .g = 0xaa, .b = 0xff};
++static RGB  host_mute_indicator_color  = {.r = 0xff, .g = 0x00, .b = 0x24};
 +static bool host_indicator_music_playing;
++static bool host_indicator_focus_active;
++static bool host_indicator_muted;
 +static bool host_indicator_active;
 +
 +#define HOST_BRIGHTNESS_PROTOCOL_MARKER 0xB1
@@ -82,6 +87,14 @@ index 6790378d56..b6dea7c9a8 100644
 +}
 +
  bool pre_process_record_kb(uint16_t keycode, keyrecord_t *record) {
++    if (record->event.pressed) {
++        if (keycode == MAC_DND) {
++            host_indicator_focus_active = !host_indicator_focus_active;
++        } else if (keycode == KC_MUTE) {
++            host_indicator_muted = !host_indicator_muted;
++        }
++    }
++
      no_act_time     = 0;
      rf_linking_time = 0;
 @@ -566,7 +574,30 @@ bool rgb_matrix_indicators_advanced_kb(uint8_t led_min, uint8_t led_max) {
@@ -93,7 +106,9 @@ index 6790378d56..b6dea7c9a8 100644
 +
 +    if (host_indicator_active) {
 +        uint8_t caps_led = get_led_index(3, 0);
++        uint8_t f6_led   = get_led_index(0, 6);
 +        uint8_t f8_led   = get_led_index(0, 8);
++        uint8_t mute_led = get_led_index(0, 10);
 +        if (caps_led >= led_min && caps_led <= led_max) {
 +            user_set_rgb_color(
 +                caps_led,
@@ -105,9 +120,25 @@ index 6790378d56..b6dea7c9a8 100644
 +        if (host_indicator_music_playing && f8_led >= led_min && f8_led <= led_max) {
 +            user_set_rgb_color(
 +                f8_led,
-+                host_indicator_color.r,
-+                host_indicator_color.g,
-+                host_indicator_color.b
++                host_media_indicator_color.r,
++                host_media_indicator_color.g,
++                host_media_indicator_color.b
++            );
++        }
++        if (host_indicator_focus_active && f6_led >= led_min && f6_led <= led_max) {
++            user_set_rgb_color(
++                f6_led,
++                host_focus_indicator_color.r,
++                host_focus_indicator_color.g,
++                host_focus_indicator_color.b
++            );
++        }
++        if (host_indicator_muted && mute_led >= led_min && mute_led <= led_max) {
++            user_set_rgb_color(
++                mute_led,
++                host_mute_indicator_color.r,
++                host_mute_indicator_color.g,
++                host_mute_indicator_color.b
 +            );
 +        }
 +    }
@@ -140,6 +171,29 @@ index 6790378d56..b6dea7c9a8 100644
 +                host_brightness_set_target(value_data[0], value_data[1]);
 +            }
 +            break;
++        case id_host_media_indicator_color:
++            host_media_indicator_color = (RGB){
++                .r = value_data[0],
++                .g = value_data[1],
++                .b = value_data[2],
++            };
++            break;
++        case id_host_focus_indicator:
++            host_focus_indicator_color = (RGB){
++                .r = value_data[0],
++                .g = value_data[1],
++                .b = value_data[2],
++            };
++            host_indicator_focus_active = value_data[3] != 0;
++            break;
++        case id_host_mute_indicator:
++            host_mute_indicator_color = (RGB){
++                .r = value_data[0],
++                .g = value_data[1],
++                .b = value_data[2],
++            };
++            host_indicator_muted = value_data[3] != 0;
++            break;
      }
  }
  
@@ -165,6 +219,23 @@ index 6790378d56..b6dea7c9a8 100644
 +            value_data[3] = HOST_BRIGHTNESS_PROTOCOL_MARKER;
 +            break;
 +        }
++        case id_host_media_indicator_color:
++            value_data[0] = host_media_indicator_color.r;
++            value_data[1] = host_media_indicator_color.g;
++            value_data[2] = host_media_indicator_color.b;
++            break;
++        case id_host_focus_indicator:
++            value_data[0] = host_focus_indicator_color.r;
++            value_data[1] = host_focus_indicator_color.g;
++            value_data[2] = host_focus_indicator_color.b;
++            value_data[3] = host_indicator_focus_active;
++            break;
++        case id_host_mute_indicator:
++            value_data[0] = host_mute_indicator_color.r;
++            value_data[1] = host_mute_indicator_color.g;
++            value_data[2] = host_mute_indicator_color.b;
++            value_data[3] = host_indicator_muted;
++            break;
      }
  }
  
@@ -180,6 +251,11 @@ index 0c232fa732..1f8f97104d 100644
 +    id_host_key_indicators          = 40,
 +    // Volatile native brightness target. Payload: target + transition ms + marker.
 +    id_host_backlight_brightness    = 41,
++    // Volatile F8 Play/Pause indicator color. Payload: RGB.
++    id_host_media_indicator_color   = 45,
++    // Volatile F6 Focus and Mute-key indicators. Payload: RGB + active flag.
++    id_host_focus_indicator         = 46,
++    id_host_mute_indicator          = 47,
  };
  
  // function declaration
@@ -206,15 +282,53 @@ index af2656a4a7..5e43b877a1 100644
          "animations": {
              "gradient_up_down": true,
 diff --git a/keyboards/nuphy/air75v2/ansi/side.c b/keyboards/nuphy/air75v2/ansi/side.c
-index b801393b86..83fdc2351a 100644
+index b801393b86..f7f0c90db4 100644
 --- a/keyboards/nuphy/air75v2/ansi/side.c
 +++ b/keyboards/nuphy/air75v2/ansi/side.c
-@@ -336,7 +336,7 @@ void sys_led_show(void) {
-         showCapsLock = dev_info.rf_led & 0x02;
-     }
+@@ -192,6 +192,10 @@ void set_side_rgb(uint8_t r, uint8_t g, uint8_t b) {
+  * @brief  set left side leds.
+  */
+ void sys_sw_led_show(void) {
++    // Once the host owns the side color, do not paint Ryo's white Mac-mode
++    // confirmation over it. Battery and low-power overlays remain intact.
++    if (host_key_indicators_active()) return;
++
+     static uint32_t sys_show_timer = 0;
+     static bool     sys_show_flag  = false;
+     extern bool     f_sys_show;
+@@ -514,5 +518,7 @@ static void side_static_mode_show(void) {
+     if (g_config.side_use_custom_color) {
+         HSV hsv = g_config.side_custom_color;
+-        hsv.v   = rgb_matrix_config.hsv.v;
++        // Side brightness is owned by g_config.side_brightness. Do not
++        // multiply it by the independent key-matrix brightness as well.
++        hsv.v   = 255;
+         RGB rgb = hsv_to_rgb(hsv);
+         r_temp  = rgb.r;
+diff --git a/keyboards/nuphy/air75v2/ansi/user_kb.c b/keyboards/nuphy/air75v2/ansi/user_kb.c
+index d55537f749..9339f0e4d8 100644
+--- a/keyboards/nuphy/air75v2/ansi/user_kb.c
++++ b/keyboards/nuphy/air75v2/ansi/user_kb.c
+@@ -427,6 +427,6 @@
+ void kb_config_reset(void) {
+     rgb_matrix_enable();
+     rgb_matrix_mode(RGB_MATRIX_DEFAULT_MODE);
+     rgb_matrix_set_speed(255 - RGB_MATRIX_SPD_STEP * 2);
+-    rgb_matrix_sethsv(RGB_DEFAULT_COLOR, 255, RGB_MATRIX_MAXIMUM_BRIGHTNESS - RGB_MATRIX_VAL_STEP * 2);
++    rgb_matrix_sethsv(0, 0, RGB_MATRIX_MAXIMUM_BRIGHTNESS - RGB_MATRIX_VAL_STEP * 2);
  
--    if (showCapsLock) {
-+    if (showCapsLock && !host_key_indicators_active()) {
-         switch (g_config.caps_indicator_type) {
-             case CAPS_INDICATOR_SIDE:
-                 set_side_rgb(0X00, 0x80, 0x80); // highlight top-left side led to indicate caps lock enabled state
+diff --git a/keyboards/nuphy/air75v2/ansi/side_right.c b/keyboards/nuphy/air75v2/ansi/side_right.c
+index 6b9cb82fe1..bf9afc70f1 100644
+--- a/keyboards/nuphy/air75v2/ansi/side_right.c
++++ b/keyboards/nuphy/air75v2/ansi/side_right.c
+@@ -213,7 +213,9 @@ static void right_side_static_mode_show(void) {
+ 
+     if (g_config.right_side_use_custom_color) {
+         HSV hsv = g_config.right_side_custom_color;
+-        hsv.v   = rgb_matrix_config.hsv.v;
++        // Keep the right side independent from key-matrix brightness too.
++        // Its own six-level control is applied immediately below.
++        hsv.v   = 255;
+         RGB rgb = hsv_to_rgb(hsv);
+         r_temp  = rgb.r;
+         g_temp  = rgb.g;

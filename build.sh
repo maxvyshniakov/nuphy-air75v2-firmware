@@ -28,7 +28,9 @@ git -C "$WORK_DIR" submodule update --init --depth 1 \
   lib/chibios \
   lib/chibios-contrib \
   lib/lufa
-git -C "$WORK_DIR" apply "$PROJECT_DIR/patches/host-key-indicators.patch"
+git -C "$WORK_DIR" apply --recount "$PROJECT_DIR/patches/host-key-indicators.patch"
+git -C "$WORK_DIR" apply --recount "$PROJECT_DIR/patches/rgb-calibration.patch"
+git -C "$WORK_DIR" apply --recount "$PROJECT_DIR/patches/audio-meter.patch"
 
 "$DOCKER_BIN" run --rm \
   -v "$WORK_DIR:/qmk_firmware" \
