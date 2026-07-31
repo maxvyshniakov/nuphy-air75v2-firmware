@@ -2,13 +2,80 @@ diff --git a/keyboards/nuphy/air75v2/ansi/ansi.c b/keyboards/nuphy/air75v2/ansi/
 index 6790378d56..b6dea7c9a8 100644
 --- a/keyboards/nuphy/air75v2/ansi/ansi.c
 +++ b/keyboards/nuphy/air75v2/ansi/ansi.c
-@@ -57,6 +57,14 @@ extern void right_side_side_color_control(uint8_t dir);
+@@ -22,6 +22,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ #include "host.h"
+ #include "keycodes.h"
+ #include "rgb_matrix.h"
++#include "timer.h"
+ #include "user_kb.h"
+ #include "ansi.h"
+ 
+@@ -57,6 +58,73 @@ extern void right_side_side_color_control(uint8_t dir);
  extern void right_side_side_mode_control(uint8_t dir);
  extern void exit_light_sleep(void);
  
 +static RGB  host_indicator_color;
 +static bool host_indicator_music_playing;
 +static bool host_indicator_active;
++
++#define HOST_BRIGHTNESS_PROTOCOL_MARKER 0xB1
++
++static bool     host_brightness_protocol_active;
++static bool     host_brightness_transitioning;
++static uint8_t  host_brightness_start;
++static uint8_t  host_brightness_target;
++static uint8_t  host_brightness_last_applied;
++static uint8_t  host_brightness_duration_ms;
++static uint32_t host_brightness_started_at;
++
++static void host_brightness_set_target(uint8_t target, uint8_t duration_ms) {
++    uint8_t current = rgb_matrix_get_val();
++
++    host_brightness_protocol_active = true;
++    host_brightness_start           = current;
++    host_brightness_target          = target > RGB_MATRIX_MAXIMUM_BRIGHTNESS ? RGB_MATRIX_MAXIMUM_BRIGHTNESS : target;
++    host_brightness_last_applied    = current;
++    host_brightness_duration_ms     = duration_ms;
++    host_brightness_started_at      = timer_read32();
++    host_brightness_transitioning   = current != host_brightness_target && duration_ms > 0;
++
++    if (!host_brightness_transitioning) {
++        rgb_matrix_sethsv_noeeprom(rgb_matrix_get_hue(), rgb_matrix_get_sat(), host_brightness_target);
++        host_brightness_last_applied = rgb_matrix_get_val();
++    }
++}
++
++static void host_brightness_task(void) {
++    if (!host_brightness_protocol_active || !host_brightness_transitioning) {
++        return;
++    }
++
++    uint8_t actual = rgb_matrix_get_val();
++    if (actual != host_brightness_last_applied) {
++        // A physical brightness key always wins over an in-flight host fade.
++        host_brightness_target        = actual;
++        host_brightness_transitioning = false;
++        return;
++    }
++
++    uint32_t elapsed = timer_elapsed32(host_brightness_started_at);
++    uint8_t  value;
++    if (elapsed >= host_brightness_duration_ms) {
++        value = host_brightness_target;
++        host_brightness_transitioning = false;
++    } else if (host_brightness_target >= host_brightness_start) {
++        uint16_t distance = host_brightness_target - host_brightness_start;
++        value             = host_brightness_start + (distance * elapsed) / host_brightness_duration_ms;
++    } else {
++        uint16_t distance = host_brightness_start - host_brightness_target;
++        value             = host_brightness_start - (distance * elapsed) / host_brightness_duration_ms;
++    }
++
++    if (value != actual) {
++        rgb_matrix_sethsv_noeeprom(rgb_matrix_get_hue(), rgb_matrix_get_sat(), value);
++        host_brightness_last_applied = rgb_matrix_get_val();
++    }
++}
 +
 +bool host_key_indicators_active(void) {
 +    return host_indicator_active;
@@ -49,7 +116,15 @@ index 6790378d56..b6dea7c9a8 100644
  }
  
  /* qmk housekeeping task */
-@@ -733,6 +764,13 @@ void via_config_set_value(uint8_t *data)
+@@ -574,5 +665,7 @@ void housekeeping_task_kb(void) {
+     timer_pro();
+ 
++    host_brightness_task();
++
+ #if (WORK_MODE == THREE_MODE)
+     uart_receive_pro();
+ 
+@@ -733,6 +828,18 @@ void via_config_set_value(uint8_t *data)
          case id_toggle_socd_indicator:
              g_config.show_socd_indicator = *value_data;
              break;
@@ -60,10 +135,15 @@ index 6790378d56..b6dea7c9a8 100644
 +            host_indicator_music_playing = value_data[3] != 0;
 +            host_indicator_active        = true;
 +            break;
++        case id_host_backlight_brightness:
++            if (value_data[2] == HOST_BRIGHTNESS_PROTOCOL_MARKER) {
++                host_brightness_set_target(value_data[0], value_data[1]);
++            }
++            break;
      }
  }
  
-@@ -815,6 +853,12 @@ void via_config_get_value(uint8_t *data) {
+@@ -815,6 +922,24 @@ void via_config_get_value(uint8_t *data) {
          case id_toggle_socd_indicator:
              *value_data = g_config.show_socd_indicator;
              break;
@@ -73,6 +153,18 @@ index 6790378d56..b6dea7c9a8 100644
 +            value_data[2] = host_indicator_color.b;
 +            value_data[3] = host_indicator_music_playing;
 +            break;
++        case id_host_backlight_brightness: {
++            uint8_t actual = rgb_matrix_get_val();
++            if (!host_brightness_transitioning) {
++                host_brightness_target       = actual;
++                host_brightness_last_applied = actual;
++            }
++            value_data[0] = actual;
++            value_data[1] = host_brightness_target;
++            value_data[2] = RGB_MATRIX_MAXIMUM_BRIGHTNESS;
++            value_data[3] = HOST_BRIGHTNESS_PROTOCOL_MARKER;
++            break;
++        }
      }
  }
  
@@ -80,16 +172,18 @@ diff --git a/keyboards/nuphy/air75v2/ansi/ansi.h b/keyboards/nuphy/air75v2/ansi/
 index 0c232fa732..1f8f97104d 100644
 --- a/keyboards/nuphy/air75v2/ansi/ansi.h
 +++ b/keyboards/nuphy/air75v2/ansi/ansi.h
-@@ -140,6 +140,8 @@ enum via_indicator_value {
+@@ -140,6 +140,10 @@ enum via_indicator_value {
      id_toggle_detect_numlock_state  = 33,
      id_battery_indicator_numeric    = 34,
      id_toggle_socd_indicator        = 35,
 +    // Volatile host-driven per-key indicators. Payload: RGB + playing flag.
 +    id_host_key_indicators          = 40,
++    // Volatile native brightness target. Payload: target + transition ms + marker.
++    id_host_backlight_brightness    = 41,
  };
  
  // function declaration
-@@ -149,6 +151,8 @@ void _set_color(HSV *color, uint8_t *data);
+@@ -149,6 +153,8 @@ void _set_color(HSV *color, uint8_t *data);
  void _get_color(HSV *color, uint8_t *data);
  #endif
  
@@ -98,6 +192,19 @@ index 0c232fa732..1f8f97104d 100644
  extern kb_config_t g_config;
  
  void save_config_to_eeprom(void);
+diff --git a/keyboards/nuphy/air75v2/ansi/keyboard.json b/keyboards/nuphy/air75v2/ansi/keyboard.json
+index af2656a4a7..5e43b877a1 100644
+--- a/keyboards/nuphy/air75v2/ansi/keyboard.json
++++ b/keyboards/nuphy/air75v2/ansi/keyboard.json
+@@ -39,7 +39,7 @@
+         "driver": "ws2812",
+         "center_point": [80, 30],
+         "max_brightness": 190,
+-        "val_steps": 26,
++        "val_steps": 8,
+         "speed_steps": 52,
+         "animations": {
+             "gradient_up_down": true,
 diff --git a/keyboards/nuphy/air75v2/ansi/side.c b/keyboards/nuphy/air75v2/ansi/side.c
 index b801393b86..83fdc2351a 100644
 --- a/keyboards/nuphy/air75v2/ansi/side.c
