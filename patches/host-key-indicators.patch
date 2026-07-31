@@ -1,0 +1,113 @@
+diff --git a/keyboards/nuphy/air75v2/ansi/ansi.c b/keyboards/nuphy/air75v2/ansi/ansi.c
+index 6790378d56..b6dea7c9a8 100644
+--- a/keyboards/nuphy/air75v2/ansi/ansi.c
++++ b/keyboards/nuphy/air75v2/ansi/ansi.c
+@@ -57,6 +57,14 @@ extern void right_side_side_color_control(uint8_t dir);
+ extern void right_side_side_mode_control(uint8_t dir);
+ extern void exit_light_sleep(void);
+ 
++static RGB  host_indicator_color;
++static bool host_indicator_music_playing;
++static bool host_indicator_active;
++
++bool host_key_indicators_active(void) {
++    return host_indicator_active;
++}
++
+ bool pre_process_record_kb(uint16_t keycode, keyrecord_t *record) {
+     no_act_time     = 0;
+     rf_linking_time = 0;
+@@ -566,7 +574,30 @@ bool rgb_matrix_indicators_advanced_kb(uint8_t led_min, uint8_t led_max) {
+         rgb_matrix_set_color(two_digit_ones_led(dev_info.rf_battery), 0x00, 0x80, 0x80);
+     }
+ 
+-    return rgb_matrix_indicators_advanced_user(led_min, led_max);
++    bool result = rgb_matrix_indicators_advanced_user(led_min, led_max);
++
++    if (host_indicator_active) {
++        uint8_t caps_led = get_led_index(3, 0);
++        uint8_t f8_led   = get_led_index(0, 8);
++        if (caps_led >= led_min && caps_led <= led_max) {
++            user_set_rgb_color(
++                caps_led,
++                host_indicator_color.r,
++                host_indicator_color.g,
++                host_indicator_color.b
++            );
++        }
++        if (host_indicator_music_playing && f8_led >= led_min && f8_led <= led_max) {
++            user_set_rgb_color(
++                f8_led,
++                host_indicator_color.r,
++                host_indicator_color.g,
++                host_indicator_color.b
++            );
++        }
++    }
++
++    return result;
+ }
+ 
+ /* qmk housekeeping task */
+@@ -733,6 +764,13 @@ void via_config_set_value(uint8_t *data)
+         case id_toggle_socd_indicator:
+             g_config.show_socd_indicator = *value_data;
+             break;
++        case id_host_key_indicators:
++            host_indicator_color.r       = value_data[0];
++            host_indicator_color.g       = value_data[1];
++            host_indicator_color.b       = value_data[2];
++            host_indicator_music_playing = value_data[3] != 0;
++            host_indicator_active        = true;
++            break;
+     }
+ }
+ 
+@@ -815,6 +853,12 @@ void via_config_get_value(uint8_t *data) {
+         case id_toggle_socd_indicator:
+             *value_data = g_config.show_socd_indicator;
+             break;
++        case id_host_key_indicators:
++            value_data[0] = host_indicator_color.r;
++            value_data[1] = host_indicator_color.g;
++            value_data[2] = host_indicator_color.b;
++            value_data[3] = host_indicator_music_playing;
++            break;
+     }
+ }
+ 
+diff --git a/keyboards/nuphy/air75v2/ansi/ansi.h b/keyboards/nuphy/air75v2/ansi/ansi.h
+index 0c232fa732..1f8f97104d 100644
+--- a/keyboards/nuphy/air75v2/ansi/ansi.h
++++ b/keyboards/nuphy/air75v2/ansi/ansi.h
+@@ -140,6 +140,8 @@ enum via_indicator_value {
+     id_toggle_detect_numlock_state  = 33,
+     id_battery_indicator_numeric    = 34,
+     id_toggle_socd_indicator        = 35,
++    // Volatile host-driven per-key indicators. Payload: RGB + playing flag.
++    id_host_key_indicators          = 40,
+ };
+ 
+ // function declaration
+@@ -149,6 +151,8 @@ void _set_color(HSV *color, uint8_t *data);
+ void _get_color(HSV *color, uint8_t *data);
+ #endif
+ 
++bool host_key_indicators_active(void);
++
+ extern kb_config_t g_config;
+ 
+ void save_config_to_eeprom(void);
+diff --git a/keyboards/nuphy/air75v2/ansi/side.c b/keyboards/nuphy/air75v2/ansi/side.c
+index b801393b86..83fdc2351a 100644
+--- a/keyboards/nuphy/air75v2/ansi/side.c
++++ b/keyboards/nuphy/air75v2/ansi/side.c
+@@ -336,7 +336,7 @@ void sys_led_show(void) {
+         showCapsLock = dev_info.rf_led & 0x02;
+     }
+ 
+-    if (showCapsLock) {
++    if (showCapsLock && !host_key_indicators_active()) {
+         switch (g_config.caps_indicator_type) {
+             case CAPS_INDICATOR_SIDE:
+                 set_side_rgb(0X00, 0x80, 0x80); // highlight top-left side led to indicate caps lock enabled state
