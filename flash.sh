@@ -3,14 +3,21 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FIRMWARE="$PROJECT_DIR/dist/nuphy-air75v2-host-indicators.bin"
-DFU_UTIL="${DFU_UTIL:-/Applications/QMK Toolbox.app/Contents/Resources/dfu-util}"
+QMK_TOOLBOX_DFU_UTIL="/Applications/QMK Toolbox.app/Contents/Resources/dfu-util"
+if [[ -z "${DFU_UTIL:-}" ]]; then
+  if [[ -x "$QMK_TOOLBOX_DFU_UTIL" ]]; then
+    DFU_UTIL="$QMK_TOOLBOX_DFU_UTIL"
+  else
+    DFU_UTIL="$(command -v dfu-util || true)"
+  fi
+fi
 
 if [[ ! -f "$FIRMWARE" ]]; then
   echo "Build the firmware first with ./build.sh" >&2
   exit 1
 fi
-if [[ ! -x "$DFU_UTIL" ]]; then
-  echo "dfu-util not found at $DFU_UTIL" >&2
+if [[ -z "$DFU_UTIL" || ! -x "$DFU_UTIL" ]]; then
+  echo "dfu-util not found; install QMK Toolbox or dfu-util, or set DFU_UTIL" >&2
   exit 1
 fi
 if ! "$DFU_UTIL" -l 2>&1 | grep -qi 'Found DFU: \[0483:df11\]'; then
